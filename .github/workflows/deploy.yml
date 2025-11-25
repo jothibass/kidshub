@@ -1,0 +1,73 @@
+name: Build & Deploy to EC2
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install backend deps
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Package deploy
+        run: |
+          rm -f deploy.tar.gz || true
+          mkdir -p deploy
+          cp -r frontend/dist deploy/frontend
+          cp -r backend deploy/backend
+          tar -czf deploy.tar.gz deploy
+
+      - name: Copy to EC2
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          source: "deploy.tar.gz"
+          target: "/home/ec2-user/"
+
+      - name: SSH and deploy
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ec2-user
+            tar -xzf deploy.tar.gz
+            sudo mkdir -p /var/www/kidshub
+            sudo chown ec2-user:ec2-user /var/www/kidshub
+            rm -rf /var/www/kidshub/*
+            mv deploy/frontend /var/www/kidshub/dist
+            mv deploy/backend /var/www/kidshub/backend
+            # Write .env using secrets
+            cat > /var/www/kidshub/backend/.env <<'EOF'
+            PORT=3000
+            DB_HOST=${{ secrets.DB_HOST }}
+            DB_PORT=5432
+            DB_USER=${{ secrets.DB_USER }}
+            DB_PASS=${{ secrets.DB_PASS }}
+            DB_NAME=${{ secrets.DB_NAME }}
+            DB_SSL=false
+            EOF
+            cd /var/www/kidshub/backend
+            npm ci --production
+            pm2 stop kidshub || true
+            pm2 start server.js --name kidshub
+            pm2 save
