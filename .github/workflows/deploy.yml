@@ -17,12 +17,12 @@ jobs:
       - name: Build frontend
         working-directory: ./frontend
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Install backend deps
         working-directory: ./backend
-        run: npm ci
+        run: npm install
 
       - name: Package deploy
         run: |
@@ -67,7 +67,7 @@ jobs:
             DB_SSL=false
             EOF
             cd /var/www/kidshub/backend
-            npm ci --production
+            npm install --production
             pm2 stop kidshub || true
             pm2 start server.js --name kidshub
             pm2 save
