@@ -1,0 +1,74 @@
+:root{
+  --brand: #ff6f61;
+  --accent: #ffd166;
+  --muted: #666666;
+  --bg: #fff7f3;
+  --card: #ffffff;
+  --radius: 12px;
+  --shadow: 0 4px 16px rgba(0,0,0,0.08);
+  --gap: 12px;
+  --max-width: 980px;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: linear-gradient(180deg, var(--bg), #fff);
+  margin: 0;
+  padding: 24px;
+  color: #222;
+}
+
+.kidhub-shell {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  gap: var(--gap);
+}
+
+.header {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin-bottom:18px;
+}
+.logo {
+  width:56px; height:56px; border-radius: 10px;
+  background: var(--brand); color:white; display:flex; align-items:center; justify-content:center;
+  font-weight:700; font-size:20px; box-shadow: var(--shadow);
+}
+.title { font-size:20px; font-weight:700; }
+.subtitle { color:var(--muted); font-size:13px; margin-top:4px; }
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding:16px;
+  box-shadow: var(--shadow);
+  margin-bottom:12px;
+}
+
+.tabs { display:flex; gap:8px; margin-bottom:12px; }
+.tab { padding:8px 12px; border-radius:8px; cursor:pointer; background:#fff; border:1px solid #eee; }
+.tab.active { background: linear-gradient(90deg,var(--accent),var(--brand)); color:#222; font-weight:700; }
+
+.form-row { display:flex; gap:12px; margin-bottom:8px; align-items:center; }
+.form-row input[type="text"], .form-row input[type="date"], textarea, select {
+  padding:8px 10px; border-radius:8px; border:1px solid #e6e6e6; font-size:14px; width:100%;
+}
+textarea { resize:vertical; min-height:80px; }
+
+.btn { background:var(--brand); color:white; border:none; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:700; }
+.btn.secondary { background:transparent; color:var(--brand); border:1px solid var(--brand); }
+
+.grid-2 { display:grid; grid-template-columns: 1fr 320px; gap: 12px; align-items:start; }
+.gallery-grid { display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; }
+.photo-card { border-radius:8px; overflow:hidden; background:#f8f8f8; display:flex; flex-direction:column; }
+.photo-card img { width:100%; height:140px; object-fit:cover; }
+.meta { padding:8px; font-size:13px; }
+
+.preview {
+  border:2px dashed #eee; border-radius:8px; padding:12px; background:linear-gradient(180deg,#fff,#fff7f3);
+}
+
+.footer-row { display:flex; justify-content:space-between; align-items:center; margin-top:10px; }
+.small { font-size:12px; color:var(--muted); }

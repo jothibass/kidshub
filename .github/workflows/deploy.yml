@@ -1,4 +1,5 @@
 name: Build & Deploy to EC2
+
 on:
   push:
     branches: [ main ]
@@ -7,67 +8,51 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 18
 
-      - name: Build frontend
-        working-directory: ./frontend
+      - name: Build frontend (optional)
+        working-directory: frontend
         run: |
-          npm install
-          npm run build
+          if [ -f package.json ]; then
+            npm ci
+            npm run build || true
+          else
+            echo "No frontend package.json; skipping build"
+          fi
 
-      - name: Install backend deps
-        working-directory: ./backend
-        run: npm install
-
-      - name: Package deploy
+      - name: Prepare deploy folder
         run: |
-          rm -f deploy.tar.gz || true
+          rm -rf deploy || true
           mkdir -p deploy
-          cp -r frontend/dist deploy/frontend
           cp -r backend deploy/backend
-          tar -czf deploy.tar.gz deploy
+          if [ -d frontend/dist ]; then
+            cp -r frontend deploy/frontend
+          fi
+          mkdir -p deploy/migrations
+          cp backend/migrations/*.sql deploy/migrations/ || true
+          mkdir -p deploy/nginx
+          cp deploy/nginx/kidshub.conf deploy/nginx/kidshub.conf || true
 
-      - name: Copy to EC2
-        uses: appleboy/scp-action@v0.1.4
+      - name: Add SSH key
+        uses: webfactory/ssh-agent@v0.8.1
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
-          source: "deploy.tar.gz"
-          target: "/home/ec2-user/"
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: SSH and deploy
-        uses: appleboy/ssh-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /home/ec2-user
-            tar -xzf deploy.tar.gz
-            sudo mkdir -p /var/www/kidshub
-            sudo chown ec2-user:ec2-user /var/www/kidshub
-            rm -rf /var/www/kidshub/*
-            mv deploy/frontend /var/www/kidshub/dist
-            mv deploy/backend /var/www/kidshub/backend
-            # Write .env using secrets
-            cat > /var/www/kidshub/backend/.env <<'EOF'
-            PORT=3000
-            DB_HOST=${{ secrets.DB_HOST }}
-            DB_PORT=5432
-            DB_USER=${{ secrets.DB_USER }}
-            DB_PASS=${{ secrets.DB_PASS }}
-            DB_NAME=${{ secrets.DB_NAME }}
-            DB_SSL=false
-            EOF
-            cd /var/www/kidshub/backend
-            npm install --production
-            pm2 stop kidshub || true
-            pm2 start server.js --name kidshub
-            pm2 save
+      - name: Upload deploy directory to EC2
+        run: |
+          scp -o StrictHostKeyChecking=no -r deploy ec2-user@${{ secrets.EC2_HOST }}:/home/ec2-user/
+
+      - name: Run deploy on EC2
+        env:
+          RDS_ENDPOINT: ${{ secrets.RDS_ENDPOINT }}
+          RDS_MASTER_USER: ${{ secrets.RDS_MASTER_USER }}
+          RDS_MASTER_PASS: ${{ secrets.RDS_MASTER_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} 'bash /home/ec2-user/deploy/deploy.sh'

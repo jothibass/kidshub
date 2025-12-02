@@ -1,14 +1,17 @@
-KidsHub EC2 deployable repo
+Kidshub Option3 Full Deploy Bundle
 
-Instructions:
+Structure:
+- backend/        Node backend, routes, migrations
+- frontend/       frontend placeholder and demo import
+- deploy/         deploy scripts, nginx config, pm2 ecosystem
+- .github/workflows/deploy.yml  GitHub Actions to copy files and run deploy.sh on EC2
 
-1. Create Postgres RDS and get DB credentials.
-2. Launch Amazon Linux 2 EC2 (t2.micro), open ports 22/80/443, associate elastic IP if needed.
-3. SSH to EC2 and run ec2/bootstrap.sh (paste contents and execute).
-4. On your machine, build frontend: cd frontend \&\& npm ci \&\& npm run build
-5. Create deploy.tar.gz as in workflow or use GitHub Actions.
-6. Upload deploy.tar.gz to EC2, extract to /home/ec2-user/, move frontend to /var/www/kidshub/dist and backend to /var/www/kidshub/backend
-7. Create /var/www/kidshub/backend/.env with DB creds.
-8. On EC2: cd /var/www/kidshub/backend \&\& npm ci --production \&\& pm2 start server.js --name kidshub
-9. Visit http://EC2\_PUBLIC\_IP/ to see the site.
-10. test
+How to use:
+1. Generate a deploy SSH key locally, add its public key to EC2 ~/.ssh/authorized_keys.
+2. Add the private key as GitHub secret EC2_SSH_KEY and set EC2_HOST secret.
+3. Add RDS secrets if you want Actions to run migrations: RDS_ENDPOINT, RDS_MASTER_USER, RDS_MASTER_PASS, DB_NAME
+4. Push to main — Actions will copy /home/ec2-user/deploy and run deploy.sh.
+
+Notes:
+- Replace the placeholder ChildProfile UI with the detailed UI bundle I previously provided (or copy from that zip).
+- The backend uses environment variables. Create /var/www/kidshub/backend/.env on EC2 or set them in your process manager.
