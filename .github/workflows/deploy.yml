@@ -1,58 +1,77 @@
-name: Build & Deploy to EC2
+name: Deploy to EC2
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      # -----------------------------------------
+      # 1) CHECKOUT REPO
+      # -----------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      - name: Build frontend (optional)
-        working-directory: frontend
-        run: |
-          if [ -f package.json ]; then
-            npm ci
-            npm run build || true
-          else
-            echo "No frontend package.json; skipping build"
-          fi
-
-      - name: Prepare deploy folder
-        run: |
-          rm -rf deploy || true
-          mkdir -p deploy
-          cp -r backend deploy/backend
-          if [ -d frontend/dist ]; then
-            cp -r frontend deploy/frontend
-          fi
-          mkdir -p deploy/migrations
-          cp backend/migrations/*.sql deploy/migrations/ || true
-          mkdir -p deploy/nginx
-          cp deploy/nginx/kidshub.conf deploy/nginx/kidshub.conf || true
-
+      # -----------------------------------------
+      # 2) SSH KEY SETUP
+      # -----------------------------------------
       - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.8.1
+        uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Upload deploy directory to EC2
-        run: |
-          scp -o StrictHostKeyChecking=no -r deploy ec2-user@${{ secrets.EC2_HOST }}:/home/ec2-user/
+      # -----------------------------------------
+      # 3) DEPLOY BACKEND TO EC2
+      # -----------------------------------------
+      - name: Copy backend files to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "backend/*"
+          target: "/var/www/kidshub/backend"
 
-      - name: Run deploy on EC2
-        env:
-          RDS_ENDPOINT: ${{ secrets.RDS_ENDPOINT }}
-          RDS_MASTER_USER: ${{ secrets.RDS_MASTER_USER }}
-          RDS_MASTER_PASS: ${{ secrets.RDS_MASTER_PASS }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-        run: |
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} 'bash /home/ec2-user/deploy/deploy.sh'
+      # -----------------------------------------
+      # 4) DEPLOY FRONTEND BUILD (optional)
+      # -----------------------------------------
+      - name: Copy frontend dist to EC2
+        if: ${{ hashFiles('frontend/dist/**') != '' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "frontend/dist/*"
+          target: "/var/www/kidshub/frontend/dist"
+
+      # -----------------------------------------
+      # 5) RESTART BACKEND ON EC2
+      # -----------------------------------------
+      - name: Restart PM2 backend
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /var/www/kidshub/backend
+            npm install --omit=dev
+            pm2 restart kidshub || pm2 start server.js --name kidshub
+            pm2 save
+
+      # -----------------------------------------
+      # 6) RELOAD NGINX
+      # -----------------------------------------
+      - name: Reload nginx
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            sudo nginx -t
+            sudo systemctl restart nginx
