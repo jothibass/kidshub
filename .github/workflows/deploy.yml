@@ -17,8 +17,8 @@ jobs:
         run: npm install
       - name: Install server & client deps
         run: |
-          cd server && npm install
-          cd ../client && npm install
+          cd server && npm install --legacy-peer-deps
+          cd ../client && npm install --legacy-peer-deps
       - name: Build client
         run: |
           cd client && npm run build
