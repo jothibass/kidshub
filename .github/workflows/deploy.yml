@@ -17,15 +17,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        # checkout default (root)
 
       - name: Debug: show workspace & repo tree (for troubleshooting)
         run: |
-          echo "WORKSPACE: $GITHUB_WORKSPACE"
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           echo "PWD: $(pwd)"
-          echo "List top-level files"
+          echo "Top-level files:"
           ls -la
-          echo "Full tree (limited depth)"
+          echo "Repository tree (depth 4):"
           find . -maxdepth 4 -mindepth 1 -print | sed -n '1,200p'
 
       - name: Setup Node.js
@@ -34,36 +33,30 @@ jobs:
           node-version: 18
           cache: 'npm'
 
-      # ----------------------------
-      # Install backend deps (auto-detect path + fallback)
-      # ----------------------------
       - name: Locate backend package.json (if any)
         id: find-backend
         run: |
-          # Try common paths first, then fallback to any backend package.json
-          set -e
+          set -euo pipefail
           BACKEND_PATH=""
           if [ -f "./backend/package.json" ]; then
             BACKEND_PATH="./backend"
           elif [ -f "./src/backend/package.json" ]; then
             BACKEND_PATH="./src/backend"
           else
-            # try to find a package.json under directories named backend (depth 3)
             p=$(find . -maxdepth 4 -type f -path "*/backend/package.json" | head -n1 || true)
             if [ -n "$p" ]; then
               BACKEND_PATH="$(dirname "$p")"
             fi
           fi
-          echo "backend_path=${BACKEND_PATH}" >> $GITHUB_OUTPUT
+          echo "backend_path=$BACKEND_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Install backend dependencies (if backend exists)
         if: steps.find-backend.outputs.backend_path != ''
         run: |
-          set -e
+          set -euo pipefail
           echo "Using backend dir: ${{ steps.find-backend.outputs.backend_path }}"
           cd "${{ steps.find-backend.outputs.backend_path }}"
           echo "PWD: $(pwd)"
-          # prefer npm ci when lockfile exists
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
             echo "Lockfile found — using npm ci"
             npm ci --omit=dev --no-audit --no-fund
@@ -75,7 +68,7 @@ jobs:
       - name: Locate frontend package.json (if any)
         id: find-frontend
         run: |
-          set -e
+          set -euo pipefail
           FRONTEND_PATH=""
           if [ -f "./frontend/package.json" ]; then
             FRONTEND_PATH="./frontend"
@@ -87,12 +80,12 @@ jobs:
               FRONTEND_PATH="$(dirname "$p")"
             fi
           fi
-          echo "frontend_path=${FRONTEND_PATH}" >> $GITHUB_OUTPUT
+          echo "frontend_path=$FRONTEND_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Build frontend (if frontend exists)
         if: steps.find-frontend.outputs.frontend_path != ''
         run: |
-          set -e
+          set -euo pipefail
           echo "Using frontend dir: ${{ steps.find-frontend.outputs.frontend_path }}"
           cd "${{ steps.find-frontend.outputs.frontend_path }}"
           echo "PWD: $(pwd)"
@@ -105,39 +98,41 @@ jobs:
           fi
           npm run build
 
-      # ----------------------------
-      # Prepare deploy directory
-      # ----------------------------
       - name: Prepare deploy directory
         run: |
-          rm -rf ${{ env.DEPLOY_DIR }} || true
-          mkdir -p ${{ env.DEPLOY_DIR }}
-          # copy backend (if exists at ./backend or detected earlier)
-          if [ -d ./backend ]; then cp -r backend ${{ env.DEPLOY_DIR }}/backend; fi
-          # also copy if repo structure placed backend elsewhere
+          set -euo pipefail
+          rm -rf "${{ env.DEPLOY_DIR }}" || true
+          mkdir -p "${{ env.DEPLOY_DIR }}"
+          # copy backend if present at ./backend
+          if [ -d ./backend ]; then
+            cp -r backend "${{ env.DEPLOY_DIR }}/backend"
+          fi
+          # copy backend from detected path if different
           if [ -n "${{ steps.find-backend.outputs.backend_path }}" ] && [ "${{ steps.find-backend.outputs.backend_path }}" != "./backend" ]; then
-            mkdir -p ${{ env.DEPLOY_DIR }}/backend
-            cp -r "${{ steps.find-backend.outputs.backend_path }}"/* ${{ env.DEPLOY_DIR }}/backend/ || true
+            mkdir -p "${{ env.DEPLOY_DIR }}/backend"
+            cp -r "${{ steps.find-backend.outputs.backend_path }}"/* "${{ env.DEPLOY_DIR }}/backend/" || true
           fi
-          # copy migrations
-          mkdir -p ${{ env.DEPLOY_DIR }}/migrations
-          if [ -d backend/migrations ]; then cp backend/migrations/* ${{ env.DEPLOY_DIR }}/migrations/ || true; fi
-          # include frontend build
+          # copy migrations if present
+          mkdir -p "${{ env.DEPLOY_DIR }}/migrations"
+          if [ -d backend/migrations ]; then
+            cp backend/migrations/* "${{ env.DEPLOY_DIR }}/migrations/" || true
+          fi
+          # copy frontend dist if exists
           if [ -d frontend/dist ]; then
-            mkdir -p ${{ env.DEPLOY_DIR }}/frontend
-            cp -r frontend/dist ${{ env.DEPLOY_DIR }}/frontend/dist
+            mkdir -p "${{ env.DEPLOY_DIR }}/frontend"
+            cp -r frontend/dist "${{ env.DEPLOY_DIR }}/frontend/dist"
           fi
-          # fallback: if build was done in a different frontend_path, copy from there
+          # copy built dist from detected frontend path if different
           if [ -n "${{ steps.find-frontend.outputs.frontend_path }}" ] && [ "${{ steps.find-frontend.outputs.frontend_path }}" != "./frontend" ] && [ -d "${{ steps.find-frontend.outputs.frontend_path }}/dist" ]; then
-            mkdir -p ${{ env.DEPLOY_DIR }}/frontend
-            cp -r "${{ steps.find-frontend.outputs.frontend_path }}/dist" ${{ env.DEPLOY_DIR }}/frontend/dist || true
+            mkdir -p "${{ env.DEPLOY_DIR }}/frontend"
+            cp -r "${{ steps.find-frontend.outputs.frontend_path }}/dist" "${{ env.DEPLOY_DIR }}/frontend/dist" || true
           fi
-          # add deploy script if present
+          # include deploy script if present
           if [ -f deploy/deploy.sh ]; then
-            mkdir -p ${{ env.DEPLOY_DIR }}/deploy
-            cp deploy/deploy.sh ${{ env.DEPLOY_DIR }}/deploy/deploy.sh
+            mkdir -p "${{ env.DEPLOY_DIR }}/deploy"
+            cp deploy/deploy.sh "${{ env.DEPLOY_DIR }}/deploy/deploy.sh"
           fi
-          ls -la ${{ env.DEPLOY_DIR }}
+          ls -la "${{ env.DEPLOY_DIR }}"
 
       - name: Add SSH key
         uses: webfactory/ssh-agent@v0.9.1
@@ -163,7 +158,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -euo pipefail
-            # ensure deploy script is executable
+            # prefer deployed deploy.sh path
             if [ -f /home/ec2-user/deploy/deploy/deploy.sh ]; then
               chmod +x /home/ec2-user/deploy/deploy/deploy.sh || true
               /home/ec2-user/deploy/deploy/deploy.sh
@@ -175,7 +170,6 @@ jobs:
               exit $?
             fi
             echo "deploy.sh not found; running inline fallback deployment steps"
-            # inline fallback: copy backend & frontend where possible, then restart services
             APP_ROOT="/var/www/kidshub"
             sudo mkdir -p "$APP_ROOT"
             if [ -d /home/ec2-user/deploy/backend ]; then
