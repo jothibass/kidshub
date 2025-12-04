@@ -1,77 +1,79 @@
-name: Deploy to EC2
+name: Build & Deploy to EC2
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------------------
-      # 1) CHECKOUT REPO
-      # -----------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------
-      # 2) SSH KEY SETUP
-      # -----------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install frontend deps & build
+        working-directory: frontend
+        run: |
+          echo ">>> Node version"
+          node -v
+          echo ">>> npm version"
+          npm -v
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+
+      - name: Show frontend/dist (debug)
+        run: |
+          echo "=== frontend root ==="
+          ls -la frontend
+          echo "=== frontend/dist ==="
+          ls -la frontend/dist || true
+
+      - name: Prepare deploy package
+        run: |
+          rm -rf deploy || true
+          mkdir -p deploy
+          cp -r backend deploy/backend || true
+          if [ -d frontend/dist ]; then
+            mkdir -p deploy/frontend
+            cp -r frontend/dist deploy/frontend/dist
+          fi
+          mkdir -p deploy/migrations
+          cp -r backend/migrations/* deploy/migrations/ 2>/dev/null || true
+          cp -v deploy/deploy.sh deploy/deploy.sh || true
+
       - name: Add SSH key
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      # -----------------------------------------
-      # 3) DEPLOY BACKEND TO EC2
-      # -----------------------------------------
-      - name: Copy backend files to EC2
+      - name: Upload deploy folder to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "backend/*"
-          target: "/var/www/kidshub/backend"
+          source: "deploy/*"
+          target: "/home/ec2-user/deploy"
 
-      # -----------------------------------------
-      # 4) DEPLOY FRONTEND BUILD (optional)
-      # -----------------------------------------
-      - name: Copy frontend dist to EC2
-        if: ${{ hashFiles('frontend/dist/**') != '' }}
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "frontend/dist/*"
-          target: "/var/www/kidshub/frontend/dist"
-
-      # -----------------------------------------
-      # 5) RESTART BACKEND ON EC2
-      # -----------------------------------------
-      - name: Restart PM2 backend
+      - name: Run deploy script on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /var/www/kidshub/backend
-            npm install --omit=dev
-            pm2 restart kidshub || pm2 start server.js --name kidshub
-            pm2 save
-
-      # -----------------------------------------
-      # 6) RELOAD NGINX
-      # -----------------------------------------
-      - name: Reload nginx
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            sudo nginx -t
-            sudo systemctl restart nginx
+            chmod +x /home/ec2-user/deploy/deploy.sh || true
+            export RDS_ENDPOINT="${{ secrets.RDS_ENDPOINT || '' }}"
+            export RDS_MASTER_USER="${{ secrets.RDS_MASTER_USER || '' }}"
+            export RDS_MASTER_PASS="${{ secrets.RDS_MASTER_PASS || '' }}"
+            export DB_NAME="${{ secrets.DB_NAME || '' }}"
+            bash /home/ec2-user/deploy/deploy.sh
