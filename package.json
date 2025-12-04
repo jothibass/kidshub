@@ -1,0 +1,11 @@
+{
+  "name": "kidshub-monorepo",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js",
+    "server": "node server/index.js",
+    "client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "postinstall": "cd server && npm install && cd ../client && npm install"
+  }
+}

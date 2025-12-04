@@ -1,159 +1,74 @@
-name: "Build Deploy to EC2"
+name: Build and Deploy to EC2
 
 on:
   push:
     branches: [ main ]
 
-env:
-  DEPLOY_DIR: deploy
-  REMOTE_DIR: /home/ubuntu/app
-
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: workspace listing
-        run: |
-          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
-          pwd
-          ls -la
-          find . -maxdepth 3 -mindepth 1 -print | sed -n '1,200p'
-
-      - name: Find backend path
-        id: find-backend
-        run: |
-          echo "Prefer backend/ if it exists..."
-          if [ -d backend ] && [ -f backend/package.json ]; then
-            echo "path=backend" >> $GITHUB_OUTPUT
-            echo "Selected backend/ as backend path"
-            exit 0
-          fi
-
-          echo "Searching for package.json in repo..."
-          matches=$(find . -type f -name package.json -printf '%h\n' | sed 's|^\./||' | sort -u || true)
-          if [ -z "$matches" ]; then
-            echo "No package.json found. Defaulting to repository root."
-            echo "path=." >> $GITHUB_OUTPUT
-          else
-            echo "Found candidates:"
-            echo "$matches"
-            first=$(echo "$matches" | head -n1)
-            echo "Selected: $first"
-            echo "path=$first" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Setup Node.js
+      - uses: actions/checkout@v4
+      - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-          cache: 'npm'
-
-      - name: Install dependencies (ci if lockfile exists, else install)
-        id: install-deps
+          node-version: '20'
+      - name: Install root deps
+        run: npm install
+      - name: Install server & client deps
         run: |
-          BACKEND_DIR="${{ steps.find-backend.outputs.path }}"
-          echo "Using backend dir: $BACKEND_DIR"
-          cd "$BACKEND_DIR" || exit 1
-
-          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ] || [ -f yarn.lock ]; then
-            echo "Lockfile found, running npm ci"
-            npm install
-          else
-            echo "No lockfile found, running npm install"
-            npm install
-          fi
-
-      - name: Build
-        id: build
+          cd server && npm install
+          cd ../client && npm install
+      - name: Build client
         run: |
-          BACKEND_DIR="${{ steps.find-backend.outputs.path }}"
-          cd "$BACKEND_DIR" || exit 1
-          if npm run | grep -q build; then
-            npm run build
-          else
-            echo "No build script present in package.json — skipping build step"
-          fi
-
-      - name: Package artifacts
-        id: package
+          cd client && npm run build
+      - name: Archive artifact
         run: |
-          BACKEND_DIR="${{ steps.find-backend.outputs.path }}"
-          cd "$BACKEND_DIR" || exit 1
-          mkdir -p "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}"
-          # Include dist if present, otherwise package whole backend folder
-          if [ -d dist ]; then
-            tar -czf "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz" dist package.json package-lock.json || true
-          else
-            tar -czf "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz" . || true
-          fi
-          ls -lh "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}"
+          zip -r deploy-package.zip server client dist package.json server/data.json || true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-package
+          path: deploy-package.zip
 
-      - name: Prepare SSH (load private key if provided)
-        env:
-          SSH_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-        run: |
-          if [ -z "$SSH_KEY" ]; then
-            echo "EC2_SSH_PRIVATE_KEY not set — skipping SSH key setup"
-            exit 0
-          fi
-
-          # Start ssh-agent and add private key securely
-          eval "$(ssh-agent -s)"
-          echo "$SSH_KEY" | tr -d '\r' > /tmp/id_rsa_deploy
-          chmod 600 /tmp/id_rsa_deploy
-          ssh-add /tmp/id_rsa_deploy
-
-          # Ensure ssh folder exists
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-
-      - name: Add EC2 host to known_hosts (if EC2_HOST provided)
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-        run: |
-          if [ -z "$EC2_HOST" ]; then
-            echo "EC2_HOST not set — skipping known_hosts step"
-            exit 0
-          fi
-
-          # Add host fingerprint to known_hosts (safe default)
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || true
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Deploy to EC2 with rsync + ssh
-        env:
-          REMOTE_HOST: ${{ secrets.EC2_HOST }}
-          REMOTE_USER: ${{ secrets.EC2_USER }}
-          REMOTE_DIR: ${{ env.REMOTE_DIR }}
-        run: |
-          # check required secrets at runtime
-          if [ -z "${REMOTE_HOST}" ]; then
-            echo "EC2_HOST (REMOTE_HOST) secret is not set — aborting deploy"
-            exit 1
-          fi
-
-          REMOTE_USER=${REMOTE_USER:-ubuntu}
-          ARTIFACT="$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz"
-          if [ ! -f "$ARTIFACT" ]; then
-            echo "Artifact not found: $ARTIFACT"
-            exit 1
-          fi
-
-          echo "Copying artifact to $REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"
-          # rsync artifact (use ssh-agent key added earlier)
-          rsync -avz -e "ssh -o StrictHostKeyChecking=no" "$ARTIFACT" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/" || { echo "rsync failed"; exit 1; }
-
-          # On remote: unpack and install production dependencies (best-effort)
-          ssh -o StrictHostKeyChecking=no "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_DIR && tar -xzf $REMOTE_DIR/artifact.tar.gz -C $REMOTE_DIR && \
-            if [ -f $REMOTE_DIR/package.json ]; then cd $REMOTE_DIR && if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ] || [ -f yarn.lock ]; then npm ci --production; else npm install --production; fi; fi && \
-            echo 'Deploy unpack+install completed'"
-
-      - name: Post-deploy debug
-        run: |
-          echo "Deployment finished. You can run further post-deploy checks here."
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-package
+          path: ./
+      - name: Copy to EC2
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || '22' }}
+          source: "deploy-package.zip"
+          target: ${{ secrets.EC2_TARGET_PATH }}
+      - name: Run remote deploy commands
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || '22' }}
+          script: |
+            set -e
+            cd ${{ secrets.EC2_TARGET_PATH }}
+            unzip -o deploy-package.zip -d ./deploy_tmp
+            # move files into place
+            rm -rf current
+            mv deploy_tmp server client dist ./current || true
+            cd current/server
+            npm install --production
+            # ensure uploads dir exists
+            mkdir -p uploads
+            # restart with pm2
+            if ! command -v pm2 >/dev/null 2>&1; then npm install -g pm2; fi
+            pm2 startOrReload ../server/ecosystem.config.js
+            pm2 save
+            echo "Deployed at $(date)"

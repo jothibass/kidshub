@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "jivantika": {
+      "id": "jivantika",
+      "name": "Jivantika",
+      "public": false,
+      "books": [],
+      "trips": [],
+      "activities": []
+    },
+    "dikshan": {
+      "id": "dikshan",
+      "name": "Dikshan",
+      "public": false,
+      "books": [],
+      "trips": [],
+      "activities": []
+    }
+  }
+}
