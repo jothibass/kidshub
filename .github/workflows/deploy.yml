@@ -4,20 +4,21 @@ on:
   push:
     branches: [ main ]
 
+env:
+  DEPLOY_DIR: deploy
+  REMOTE_DIR: /home/ubuntu/app
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    env:
-      DEPLOY_DIR: deploy
-      # target remote directory on EC2 (change as needed)
-      REMOTE_DIR: /home/ubuntu/app
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: "workspace listing"
+      - name: Debug: workspace listing
         run: |
           echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           pwd
@@ -84,43 +85,60 @@ jobs:
         run: |
           BACKEND_DIR="${{ steps.find-backend.outputs.path }}"
           cd "$BACKEND_DIR" || exit 1
-          mkdir -p $GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}
-          # change this to include what you need (dist, package.json, etc.)
+          mkdir -p "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}"
+          # Include dist if present, otherwise package whole backend folder
           if [ -d dist ]; then
-            tar -czf $GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz dist package.json package-lock.json || true
+            tar -czf "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz" dist package.json package-lock.json || true
           else
-            # fallback to whole backend folder (be cautious with size)
-            tar -czf $GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz . || true
+            tar -czf "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz" . || true
           fi
-          ls -lh $GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}
+          ls -lh "$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}"
 
-      - name: Prepare SSH (add key + known_hosts)
-        if: ${{ secrets.EC2_SSH_PRIVATE_KEY != '' }}
-        uses: webfactory/ssh-agent@v0.8.1
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-
-      - name: Add EC2 host to known_hosts (optional safer way)
-        if: ${{ secrets.EC2_HOST != '' }}
+      - name: Prepare SSH (load private key if provided)
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         run: |
-          # Add host fingerprint to known_hosts to avoid StrictHostKeyChecking=no (replace port if non-standard)
-          EC2_HOST="${{ secrets.EC2_HOST }}"
+          if [ -z "$SSH_KEY" ]; then
+            echo "EC2_SSH_PRIVATE_KEY not set — skipping SSH key setup"
+            exit 0
+          fi
+
+          # Start ssh-agent and add private key securely
+          eval "$(ssh-agent -s)"
+          echo "$SSH_KEY" | tr -d '\r' > /tmp/id_rsa_deploy
+          chmod 600 /tmp/id_rsa_deploy
+          ssh-add /tmp/id_rsa_deploy
+
+          # Ensure ssh folder exists
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+      - name: Add EC2 host to known_hosts (if EC2_HOST provided)
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          if [ -z "$EC2_HOST" ]; then
+            echo "EC2_HOST not set — skipping known_hosts step"
+            exit 0
+          fi
+
+          # Add host fingerprint to known_hosts (safe default)
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts || true
           chmod 600 ~/.ssh/known_hosts
-        env:
-          SSH_AUTH_SOCK: ${{ env.SSH_AUTH_SOCK || '' }}
 
-      - name: Deploy to EC2 with rsync
+      - name: Deploy to EC2 with rsync + ssh
         env:
           REMOTE_HOST: ${{ secrets.EC2_HOST }}
-          REMOTE_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          REMOTE_USER: ${{ secrets.EC2_USER }}
           REMOTE_DIR: ${{ env.REMOTE_DIR }}
         run: |
-          if [ -z "$REMOTE_HOST" ]; then
-            echo "EC2_HOST secret is not set — skipping deploy"
+          # check required secrets at runtime
+          if [ -z "${REMOTE_HOST}" ]; then
+            echo "EC2_HOST (REMOTE_HOST) secret is not set — aborting deploy"
             exit 1
           fi
 
+          REMOTE_USER=${REMOTE_USER:-ubuntu}
           ARTIFACT="$GITHUB_WORKSPACE/${{ env.DEPLOY_DIR }}/artifact.tar.gz"
           if [ ! -f "$ARTIFACT" ]; then
             echo "Artifact not found: $ARTIFACT"
@@ -128,16 +146,14 @@ jobs:
           fi
 
           echo "Copying artifact to $REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"
-          # Ensure remote directory exists and copy artifact
+          # rsync artifact (use ssh-agent key added earlier)
           rsync -avz -e "ssh -o StrictHostKeyChecking=no" "$ARTIFACT" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/" || { echo "rsync failed"; exit 1; }
 
-          # On remote: unpack and perform any necessary steps (adjust as required)
+          # On remote: unpack and install production dependencies (best-effort)
           ssh -o StrictHostKeyChecking=no "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_DIR && tar -xzf $REMOTE_DIR/artifact.tar.gz -C $REMOTE_DIR && \
             if [ -f $REMOTE_DIR/package.json ]; then cd $REMOTE_DIR && if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ] || [ -f yarn.lock ]; then npm ci --production; else npm install --production; fi; fi && \
-            # you can add pm2/systemctl restart commands below (example commented)
-            # pm2 restart my-app || pm2 start ecosystem.config.js
             echo 'Deploy unpack+install completed'"
 
-      - name: Postdeploy debug
+      - name: Post-deploy debug
         run: |
           echo "Deployment finished. You can run further post-deploy checks here."
