@@ -4,10 +4,6 @@ on:
   push:
     branches: [ main ]
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -18,14 +14,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Debug: show workspace & repo tree (for troubleshooting)
+      - name: Debug: workspace listing
         run: |
           echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
-          echo "PWD: $(pwd)"
-          echo "Top-level files:"
+          pwd
           ls -la
-          echo "Repository tree (depth 4):"
-          find . -maxdepth 4 -mindepth 1 -print | sed -n '1,200p'
+          find . -maxdepth 3 -mindepth 1 -print | sed -n '1,200p'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,7 +27,7 @@ jobs:
           node-version: 18
           cache: 'npm'
 
-      - name: Locate backend package.json (if any)
+      - name: Find backend path
         id: find-backend
         run: |
           set -euo pipefail
@@ -50,22 +44,19 @@ jobs:
           fi
           echo "backend_path=$BACKEND_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Install backend dependencies (if backend exists)
+      - name: Install backend deps (if any)
         if: steps.find-backend.outputs.backend_path != ''
         run: |
           set -euo pipefail
-          echo "Using backend dir: ${{ steps.find-backend.outputs.backend_path }}"
+          echo "Backend dir: ${{ steps.find-backend.outputs.backend_path }}"
           cd "${{ steps.find-backend.outputs.backend_path }}"
-          echo "PWD: $(pwd)"
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            echo "Lockfile found — using npm ci"
             npm ci --omit=dev --no-audit --no-fund
           else
-            echo "No lockfile — using npm install"
             npm install --omit=dev --no-audit --no-fund
           fi
 
-      - name: Locate frontend package.json (if any)
+      - name: Find frontend path
         id: find-frontend
         run: |
           set -euo pipefail
@@ -82,52 +73,43 @@ jobs:
           fi
           echo "frontend_path=$FRONTEND_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Build frontend (if frontend exists)
+      - name: Build frontend (if any)
         if: steps.find-frontend.outputs.frontend_path != ''
         run: |
           set -euo pipefail
-          echo "Using frontend dir: ${{ steps.find-frontend.outputs.frontend_path }}"
+          echo "Frontend dir: ${{ steps.find-frontend.outputs.frontend_path }}"
           cd "${{ steps.find-frontend.outputs.frontend_path }}"
-          echo "PWD: $(pwd)"
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-            echo "Lockfile found — using npm ci"
             npm ci
           else
-            echo "No lockfile — using npm install"
             npm install
           fi
           npm run build
 
-      - name: Prepare deploy directory
+      - name: Prepare deploy package
         run: |
           set -euo pipefail
           rm -rf "${{ env.DEPLOY_DIR }}" || true
           mkdir -p "${{ env.DEPLOY_DIR }}"
-          # copy backend if present at ./backend
           if [ -d ./backend ]; then
             cp -r backend "${{ env.DEPLOY_DIR }}/backend"
           fi
-          # copy backend from detected path if different
           if [ -n "${{ steps.find-backend.outputs.backend_path }}" ] && [ "${{ steps.find-backend.outputs.backend_path }}" != "./backend" ]; then
             mkdir -p "${{ env.DEPLOY_DIR }}/backend"
             cp -r "${{ steps.find-backend.outputs.backend_path }}"/* "${{ env.DEPLOY_DIR }}/backend/" || true
           fi
-          # copy migrations if present
           mkdir -p "${{ env.DEPLOY_DIR }}/migrations"
           if [ -d backend/migrations ]; then
             cp backend/migrations/* "${{ env.DEPLOY_DIR }}/migrations/" || true
           fi
-          # copy frontend dist if exists
           if [ -d frontend/dist ]; then
             mkdir -p "${{ env.DEPLOY_DIR }}/frontend"
             cp -r frontend/dist "${{ env.DEPLOY_DIR }}/frontend/dist"
           fi
-          # copy built dist from detected frontend path if different
           if [ -n "${{ steps.find-frontend.outputs.frontend_path }}" ] && [ "${{ steps.find-frontend.outputs.frontend_path }}" != "./frontend" ] && [ -d "${{ steps.find-frontend.outputs.frontend_path }}/dist" ]; then
             mkdir -p "${{ env.DEPLOY_DIR }}/frontend"
             cp -r "${{ steps.find-frontend.outputs.frontend_path }}/dist" "${{ env.DEPLOY_DIR }}/frontend/dist" || true
           fi
-          # include deploy script if present
           if [ -f deploy/deploy.sh ]; then
             mkdir -p "${{ env.DEPLOY_DIR }}/deploy"
             cp deploy/deploy.sh "${{ env.DEPLOY_DIR }}/deploy/deploy.sh"
@@ -139,7 +121,7 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Upload deploy folder to EC2
+      - name: Upload deploy to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -149,7 +131,7 @@ jobs:
           source: "deploy/*"
           target: "/home/ec2-user/deploy"
 
-      - name: Run deploy script on EC2
+      - name: Run deploy on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -158,7 +140,6 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -euo pipefail
-            # prefer deployed deploy.sh path
             if [ -f /home/ec2-user/deploy/deploy/deploy.sh ]; then
               chmod +x /home/ec2-user/deploy/deploy/deploy.sh || true
               /home/ec2-user/deploy/deploy/deploy.sh
@@ -169,7 +150,7 @@ jobs:
               /home/ec2-user/deploy/deploy.sh
               exit $?
             fi
-            echo "deploy.sh not found; running inline fallback deployment steps"
+            echo "No deploy.sh found; running fallback inline deploy"
             APP_ROOT="/var/www/kidshub"
             sudo mkdir -p "$APP_ROOT"
             if [ -d /home/ec2-user/deploy/backend ]; then
