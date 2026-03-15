@@ -72,3 +72,9 @@ jobs:
             pm2 startOrReload ../server/ecosystem.config.js
             pm2 save
             echo "Deployed at $(date)"
+      - name: Display EC2 Host Information
+        run: |
+          echo "Deploying to EC2 Host: ${{ secrets.EC2_HOST }}"  
+          echo "SSH Port: ${{ secrets.EC2_SSH_PORT || 22 }}"
+          echo "Deploy User: ${{ secrets.EC2_USER }}"
+          echo "Deploy Path: ${{ secrets.EC2_DEPLOY_PATH }}"
